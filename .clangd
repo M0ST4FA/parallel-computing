@@ -1,0 +1,9 @@
+CompileFlags:
+  Compiler: /opt/intel/oneapi/compiler/2026.0/bin/icpx
+  Remove:
+    - -fsycl
+  Add:
+    - -std=c++20
+    - -isystem
+    - /opt/intel/oneapi/compiler/2026.0/include
+    - -I/home/m0st4fa/workspace/learning/parallel-computing/parallel-patterns/third-party/sycl-academy/include

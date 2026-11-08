@@ -61,7 +61,15 @@ int main() {
 
 			sycl::group_barrier(item.get_group());
 
-			local_acc.fetch_add(input[item.get_global_linear_id()]);
+			T partial = 0;
+
+			for (int i = item.get_global_linear_id();
+				 i < data_size;
+				 i += item.get_global_range(0)) {
+				partial += input[i];
+			}
+
+			local_acc.fetch_add(partial);
 
 			sycl::group_barrier(item.get_group());
 
@@ -70,12 +78,10 @@ int main() {
 		};
 	};
 
-	sycl::nd_range<1> global_range{data_size, local_size};
-
 	util::benchmark([&]() {
 		sycl::event output_ready = q.submit([&](sycl::handler& h) {
 			h.depends_on(inputs_ready);
-			h.parallel_for(global_range, global_atomic_kernel);
+			h.parallel_for(sycl::nd_range<1>{data_size, local_size}, global_atomic_kernel);
 		});
 
 		output_ready.wait_and_throw();
@@ -88,7 +94,7 @@ int main() {
 			h.depends_on(inputs_ready);
 			sycl::local_accessor<T, 1> local_output{1, h};
 
-			h.parallel_for(global_range, local_atomic_kernel(local_output));
+			h.parallel_for(sycl::nd_range<1>{data_size / 8, local_size}, local_atomic_kernel(local_output));
 		});
 
 		output_ready.wait_and_throw();
@@ -96,12 +102,12 @@ int main() {
 					num_iter, "Reduce with local atomic refernece");
 	q.memset(lm_output, static_cast<T>(0), sizeof(T)).wait_and_throw();
 
-	sycl::event goutput_ready = q.parallel_for(global_range, inputs_ready, global_atomic_kernel);
+	sycl::event goutput_ready = q.parallel_for(sycl::nd_range<1>{data_size, local_size}, inputs_ready, global_atomic_kernel);
 	sycl::event loutput_ready = q.submit([&](sycl::handler& h) {
 		h.depends_on(inputs_ready);
 		sycl::local_accessor<T, 1> local_output{1, h};
 
-		h.parallel_for(global_range, local_atomic_kernel(local_output));
+		h.parallel_for(sycl::nd_range<1>{data_size / 8, local_size}, local_atomic_kernel(local_output));
 	});
 
 	T gdevice_sum = 0;
