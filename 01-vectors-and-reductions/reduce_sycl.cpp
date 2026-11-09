@@ -5,10 +5,10 @@
 
 #include "benchmark.h"
 
-constexpr size_t data_size = 32'768 * 8;
+constexpr size_t data_size = 32'768 * 32;
 // constexpr size_t data_size = 196'908;
-constexpr size_t local_size = 512;
-constexpr size_t global_size = data_size;
+constexpr size_t local_size = 128;
+constexpr size_t global_size = data_size / 32;
 constexpr size_t num_iter = 100;
 
 using T = std::uint32_t;
@@ -43,28 +43,27 @@ int main() {
 			return
 			[=](sycl::nd_item<1> item) 
 				{
-					// 1. Load data into scratch space
+					// 1. Reduce into private memory
 					auto global_id = item.get_global_linear_id();
 					auto global_size = item.get_global_range(0);
 
 					auto local_id = item.get_local_linear_id();
 					auto local_size = item.get_local_range(0);
 
-					scratch[local_id] = input[global_id];
+					T partial = 0;
+					for (size_t i = global_id; i < data_size; i += global_size)
+						partial += input[i];
+
+					scratch[local_id] = partial;
 
 					sycl::group_barrier(item.get_group());
 
-					// 2. Accumulate locally
-					size_t rem = scratch.size();
-
-					while (rem != 1) {
-						if (local_id < rem / 2)
-							scratch[local_id] += scratch[local_id + rem / 2];
+					// 2. Reduce locally
+					for (size_t stride = scratch.size() / 2; stride > 0; stride /= 2) {
+						if (local_id < stride)
+							scratch[local_id] += scratch[local_id + stride];
 
 						sycl::group_barrier(item.get_group());
-
-						// Enter next stage; we now have half the number of items
-						rem /= 2;
 					}
 
 					// 3. Accumulate globally
@@ -83,9 +82,11 @@ int main() {
 				h.parallel_for(sycl::nd_range<1>{global_size, local_size}, kernel(h));
 			});
 
-			q.memset(output, T(0), sizeof(T), output_ready).wait_and_throw();
+			output_ready.wait_and_throw();
 		},
 						num_iter, "Reduce with tree reduction");
+
+		q.memset(output, T(0), sizeof(T)).wait_and_throw();
 
 		sycl::event output_ready = q.submit([&](sycl::handler& h) {
 			h.depends_on(inputs_ready);

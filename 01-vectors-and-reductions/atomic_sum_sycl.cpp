@@ -12,9 +12,10 @@
 
 #include "benchmark.h"
 
-constexpr size_t data_size = 32'768 * 8;
+constexpr size_t data_size = 32'768 * 32;
 // constexpr size_t data_size = 196'908;
-constexpr size_t local_size = 512;
+constexpr size_t local_size = 128;
+constexpr size_t global_size = data_size / 32;
 constexpr size_t num_iter = 100;
 
 using T = std::uint32_t;
@@ -46,7 +47,14 @@ int main() {
 			sycl::atomic_ref<T, sycl::memory_order_relaxed, sycl::memory_scope_device, sycl::access::address_space::global_space>
 				acc{*gm_output};
 
-			acc.fetch_add(input[item.get_global_linear_id()]);
+			T partial = 0;
+
+			for (size_t i = item.get_global_linear_id();
+				 i < data_size;
+				 i += item.get_global_range(0))
+				partial += input[i];
+
+			acc.fetch_add(partial);
 		};
 
 	auto local_atomic_kernel = [=](sycl::local_accessor<T, 1> local_output) {
@@ -81,7 +89,7 @@ int main() {
 	util::benchmark([&]() {
 		sycl::event output_ready = q.submit([&](sycl::handler& h) {
 			h.depends_on(inputs_ready);
-			h.parallel_for(sycl::nd_range<1>{data_size, local_size}, global_atomic_kernel);
+			h.parallel_for(sycl::nd_range<1>{global_size, local_size}, global_atomic_kernel);
 		});
 
 		output_ready.wait_and_throw();
@@ -94,7 +102,7 @@ int main() {
 			h.depends_on(inputs_ready);
 			sycl::local_accessor<T, 1> local_output{1, h};
 
-			h.parallel_for(sycl::nd_range<1>{data_size / 8, local_size}, local_atomic_kernel(local_output));
+			h.parallel_for(sycl::nd_range<1>{global_size, local_size}, local_atomic_kernel(local_output));
 		});
 
 		output_ready.wait_and_throw();
@@ -102,12 +110,12 @@ int main() {
 					num_iter, "Reduce with local atomic refernece");
 	q.memset(lm_output, static_cast<T>(0), sizeof(T)).wait_and_throw();
 
-	sycl::event goutput_ready = q.parallel_for(sycl::nd_range<1>{data_size, local_size}, inputs_ready, global_atomic_kernel);
+	sycl::event goutput_ready = q.parallel_for(sycl::nd_range<1>{global_size, local_size}, inputs_ready, global_atomic_kernel);
 	sycl::event loutput_ready = q.submit([&](sycl::handler& h) {
 		h.depends_on(inputs_ready);
 		sycl::local_accessor<T, 1> local_output{1, h};
 
-		h.parallel_for(sycl::nd_range<1>{data_size / 8, local_size}, local_atomic_kernel(local_output));
+		h.parallel_for(sycl::nd_range<1>{global_size, local_size}, local_atomic_kernel(local_output));
 	});
 
 	T gdevice_sum = 0;
@@ -119,7 +127,7 @@ int main() {
 	q.wait_and_throw();
 
 	std::cout << std::format("CPU: {}, global SYCL: {}, local SYCL: {}, differ: {}",
-							 sum, gdevice_sum, ldevice_sum, sum != gdevice_sum && sum != ldevice_sum)
+							 sum, gdevice_sum, ldevice_sum, sum != gdevice_sum || sum != ldevice_sum)
 			  << std::endl;
 
 	sycl::free(input, q);
