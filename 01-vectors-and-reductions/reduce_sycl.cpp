@@ -110,6 +110,43 @@ int main() {
 			};
 		// clang-format on
 
+		// clang-format off
+		auto joing_reduce_kernel =
+		[&](sycl::handler& h) { 
+			return
+			[=](sycl::nd_item<1> item) 
+				{
+					auto global_id = item.get_global_linear_id();
+					auto global_size = item.get_global_range(0);
+
+					auto local_id = item.get_local_linear_id();
+					auto local_size = item.get_local_range(0);
+
+					auto group_count = item.get_group_range(0);
+					auto group_id = item.get_group_linear_id();
+					size_t element_per_group = data_size / group_count;
+
+					size_t begin = group_id * element_per_group;
+					size_t end = (group_id + 1) * element_per_group;
+
+					sycl::group<1> group = item.get_group(); 
+
+					auto group_sum = sycl::joint_reduce(
+							group,
+							input + begin, 
+							input + end, 
+							sycl::plus<T>{});
+
+					// 3. Accumulate globally
+					sycl::atomic_ref<T, sycl::memory_order_relaxed, sycl::memory_scope_device, sycl::access::address_space::global_space>
+						atomic_output{*output};
+
+					if (group.leader())
+						atomic_output.fetch_add(group_sum);
+				}; 
+			};
+		// clang-format on
+
 		util::benchmark([&]() {
 			sycl::event output_ready = q.submit([&](sycl::handler& h) {
 				h.depends_on(inputs_ready);
@@ -134,9 +171,21 @@ int main() {
 
 		q.memset(output, T(0), sizeof(T)).wait_and_throw();
 
+		util::benchmark([&]() {
+			sycl::event output_ready = q.submit([&](sycl::handler& h) {
+				h.depends_on(inputs_ready);
+				h.parallel_for(sycl::nd_range<1>{global_size, local_size}, joing_reduce_kernel(h));
+			});
+
+			output_ready.wait_and_throw();
+		},
+						num_iter, "Reduce with joint_reduce");
+
+		q.memset(output, T(0), sizeof(T)).wait_and_throw();
+
 		sycl::event output_ready = q.submit([&](sycl::handler& h) {
 			h.depends_on(inputs_ready);
-			h.parallel_for(sycl::nd_range<1>{global_size, local_size}, group_algo_kernel(h));
+			h.parallel_for(sycl::nd_range<1>{global_size, local_size}, joing_reduce_kernel(h));
 		});
 
 		T device_sum = 0;
