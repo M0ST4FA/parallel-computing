@@ -39,8 +39,6 @@ int main() {
 		// clang-format off
 		auto kernel =
 		[&](sycl::handler& h) { 
-			sycl::local_accessor<T, 1> scratch{local_size, h};
-
 			return
 			[=](sycl::nd_item<1> item) 
 				{
@@ -52,29 +50,28 @@ int main() {
 					auto local_size = item.get_local_range(0);
 
 					auto group = item.get_group();
+					auto subgroup = item.get_sub_group();
+					auto lane = subgroup.get_local_linear_id();
+					auto subgroup_width = subgroup.get_local_linear_range();
 
 					T partial = 0;
 					for (size_t i = global_id; i < data_size; i += global_size)
 						partial += input[i];
 
-					scratch[local_id] = partial;
-
-					sycl::group_barrier(item.get_group());
-
-					// 2. Reduce locally
-					for (size_t stride = scratch.size() / 2; stride > 0; stride /= 2) {
-						if (local_id < stride)
-							scratch[local_id] += scratch[local_id + stride];
-
-						sycl::group_barrier(item.get_group());
+					// 2. Reduce partial into private memory
+					for (size_t stride = subgroup_width / 2; stride > 0; stride /= 2) {
+						T other = sycl::shift_group_left(subgroup, partial, stride);
+						
+						if (lane < stride)
+							partial += other;
 					}
 
 					// 3. Accumulate globally
 					sycl::atomic_ref<T, sycl::memory_order_relaxed, sycl::memory_scope_device, sycl::access::address_space::global_space>
 						atomic_output{*output};
 
-					if (group.leader())
-						atomic_output.fetch_add(scratch[local_id]);
+					if (subgroup.leader())
+						atomic_output.fetch_add(partial);
 				}; 
 			};
 		// clang-format on
@@ -185,7 +182,7 @@ int main() {
 
 		sycl::event output_ready = q.submit([&](sycl::handler& h) {
 			h.depends_on(inputs_ready);
-			h.parallel_for(sycl::nd_range<1>{global_size, local_size}, joing_reduce_kernel(h));
+			h.parallel_for(sycl::nd_range<1>{global_size, local_size}, kernel(h));
 		});
 
 		T device_sum = 0;
