@@ -39,6 +39,8 @@ int main() {
 		// clang-format off
 		auto kernel =
 		[&](sycl::handler& h) { 
+			sycl::local_accessor<T, 1> scratch{local_size, h};
+
 			return
 			[=](sycl::nd_item<1> item) 
 				{
@@ -51,6 +53,7 @@ int main() {
 
 					auto group = item.get_group();
 					auto subgroup = item.get_sub_group();
+					auto subgroup_id = subgroup.get_group_linear_id();
 					auto lane = subgroup.get_local_linear_id();
 					auto subgroup_width = subgroup.get_local_linear_range();
 
@@ -58,7 +61,7 @@ int main() {
 					for (size_t i = global_id; i < data_size; i += global_size)
 						partial += input[i];
 
-					// 2. Reduce partial into private memory
+					// 2. Reduce subgroup partials into private memory
 					for (size_t stride = subgroup_width / 2; stride > 0; stride /= 2) {
 						T other = sycl::shift_group_left(subgroup, partial, stride);
 						
@@ -66,12 +69,24 @@ int main() {
 							partial += other;
 					}
 
-					// 3. Accumulate globally
+					// 3. Accumulate across subgroups of the group into scratchpad
+
+					// We need to use scratch space because we can't shift across subgroups
+					if (subgroup.leader())
+						scratch[subgroup_id] = partial;
+					sycl::group_barrier(group);
+
+					T group_partial = 0;
+					if (group.leader())
+						for (size_t i = 0; i < subgroup.get_group_range()[0]; i++)
+							group_partial += scratch[i];
+
+					// 4. Accumulate entire group contribution
 					sycl::atomic_ref<T, sycl::memory_order_relaxed, sycl::memory_scope_device, sycl::access::address_space::global_space>
 						atomic_output{*output};
 
-					if (subgroup.leader())
-						atomic_output.fetch_add(partial);
+					if (group.leader())
+						atomic_output.fetch_add(group_partial);
 				}; 
 			};
 		// clang-format on
