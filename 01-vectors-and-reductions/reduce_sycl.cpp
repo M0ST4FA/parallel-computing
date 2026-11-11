@@ -2,6 +2,7 @@
 #include <sycl/accessor.hpp>
 #include <sycl/group_algorithm.hpp>
 #include <sycl/group_barrier.hpp>
+#include <sycl/properties/reduction_properties.hpp>
 #include <sycl/sycl.hpp>
 
 #include "benchmark.h"
@@ -182,6 +183,24 @@ int main() {
 			};
 		// clang-format on
 
+		// clang-format off
+		auto sycl_reduce_kernel =
+		[&](sycl::handler& h) { 
+
+			return
+			[=](sycl::nd_item<1> item, auto &sum) 
+				{
+					T partial = 0;
+					for (int i = item.get_global_linear_id();
+							i < data_size;
+							i += item.get_global_range(0))
+						partial += input[i];
+
+					sum.combine(partial);
+				}; 
+			};
+		// clang-format on
+
 		util::benchmark([&]() {
 			sycl::event output_ready = q.submit([&](sycl::handler& h) {
 				h.depends_on(inputs_ready);
@@ -218,9 +237,33 @@ int main() {
 
 		q.memset(output, T(0), sizeof(T)).wait_and_throw();
 
+		util::benchmark([&]() {
+			sycl::event output_ready = q.submit([&](sycl::handler& h) {
+				h.depends_on(inputs_ready);
+
+				auto sum_reduction = sycl::reduction(output, sycl::plus<>{});
+
+				h.parallel_for(sycl::nd_range<1>{global_size, local_size},
+							   sum_reduction,
+							   sycl_reduce_kernel(h));
+			});
+
+			output_ready.wait_and_throw();
+		},
+						num_iter, "Reduce with sycl::reduction");
+
+		q.memset(output, T(0), sizeof(T)).wait_and_throw();
+
 		sycl::event output_ready = q.submit([&](sycl::handler& h) {
 			h.depends_on(inputs_ready);
-			h.parallel_for(sycl::nd_range<1>{global_size, local_size}, kernel(h));
+			auto sum_reduction = sycl::reduction(output, sycl::plus<>{},
+												 sycl::property::reduction::initialize_to_identity());
+
+			h.parallel_for(sycl::nd_range<1>{global_size, local_size},
+						   sum_reduction,
+						   sycl_reduce_kernel(h));
+
+			// h.parallel_for(sycl::nd_range<1>{global_size, local_size}, kernel(h));
 		});
 
 		T device_sum = 0;
