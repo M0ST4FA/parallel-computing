@@ -51,42 +51,65 @@ int main() {
 					auto local_id = item.get_local_linear_id();
 					auto local_size = item.get_local_range(0);
 
+					// Group variables
 					auto group = item.get_group();
+					size_t group_count = group.get_group_linear_range();
+					size_t group_width = group.get_local_linear_range();
+
+					size_t element_per_group = data_size / group_count;
+					size_t group_origin = group.get_group_id(0) * element_per_group;
+
+					// Subgroup variables
 					auto subgroup = item.get_sub_group();
 					auto subgroup_id = subgroup.get_group_linear_id();
 					auto lane = subgroup.get_local_linear_id();
-					auto subgroup_width = subgroup.get_local_linear_range();
+					// Subgroup width == warp width == wavefront width
+					auto simd_width = subgroup.get_local_linear_range();
+
+					// Item variables
+					size_t element_per_item = element_per_group / group_width;
+
+					size_t begin = local_id * element_per_item;
+					size_t end = (local_id + 1) * element_per_item;
 
 					T partial = 0;
-					for (size_t i = global_id; i < data_size; i += global_size)
-						partial += input[i];
+					for (size_t i = local_id; i < element_per_group; i += group_width)
+						partial += input[group_origin + i];
 
 					// 2. Reduce subgroup partials into private memory
-					for (size_t stride = subgroup_width / 2; stride > 0; stride /= 2) {
+					for (size_t stride = simd_width / 2; stride > 0; stride /= 2) {
 						T other = sycl::shift_group_left(subgroup, partial, stride);
 						
 						if (lane < stride)
 							partial += other;
 					}
 
-					// 3. Accumulate across subgroups of the group into scratchpad
+					// 3. Accumulate across subgroups
 
-					// We need to use scratch space because we can't shift across subgroups
+					// Put the partials into scratchpad
 					if (subgroup.leader())
 						scratch[subgroup_id] = partial;
+
 					sycl::group_barrier(group);
 
-					T group_partial = 0;
-					if (group.leader())
-						for (size_t i = 0; i < subgroup.get_group_range()[0]; i++)
-							group_partial += scratch[i];
+					if (subgroup_id == 0) { // "Leader" subgroup
+						size_t subgroup_count = subgroup.get_group_linear_range();
+						T group_partial = lane < subgroup_count ? scratch[lane] : T{0};
 
-					// 4. Accumulate entire group contribution
-					sycl::atomic_ref<T, sycl::memory_order_relaxed, sycl::memory_scope_device, sycl::access::address_space::global_space>
-						atomic_output{*output};
+						for (size_t stride = simd_width / 2; stride > 0; stride /= 2) {
+							T other = sycl::shift_group_left(subgroup, group_partial, stride);
 
-					if (group.leader())
-						atomic_output.fetch_add(group_partial);
+							if (lane < stride)
+								group_partial += other;
+						}
+						// 4. Accumulate entire group contribution
+						sycl::atomic_ref<T, sycl::memory_order_relaxed, sycl::memory_scope_device, sycl::access::address_space::global_space>
+							atomic_output{*output};
+
+						if (group.leader())
+							atomic_output.fetch_add(group_partial);
+					}
+
 				}; 
 			};
 		// clang-format on
