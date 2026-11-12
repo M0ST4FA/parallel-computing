@@ -1,5 +1,5 @@
 CXX := icpx
-CXXFLAGS := -std=c++20 -fsycl
+CXXFLAGS := -std=c++20 -fsycl -march=native
 CPPFLAGS := -Ithird-party/sycl-academy/include
 
 .PHONY: all clean
@@ -10,6 +10,9 @@ atomic_sum: ./01-vectors-and-reductions/atomic_sum_sycl.cpp
 	${CXX} ${CXXFLAGS} ${CPPFLAGS} $< -o build/$@
 
 reduce_sum: ./01-vectors-and-reductions/reduce_sycl.cpp
+	${CXX} ${CXXFLAGS} ${CPPFLAGS} $< -o build/$@
+
+dot_product: ./01-vectors-and-reductions/dot_product_sycl.cpp
 	${CXX} ${CXXFLAGS} ${CPPFLAGS} $< -o build/$@
 
 build:
