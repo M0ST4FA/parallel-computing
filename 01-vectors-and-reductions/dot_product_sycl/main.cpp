@@ -1,9 +1,13 @@
 #include <format>
 
 #include "benchmark.h"
+
 #include "common.hpp"
+
 #include "cpu.hpp"
+
 #include "joining.hpp"
+#include "manual.hpp"
 #include "reduction.hpp"
 
 constexpr size_t num_iter = 100;
@@ -77,9 +81,13 @@ int main() {
 
 		util::benchmark([&]() {
 			auto reduction_finished = q.submit([&](sycl::handler& h) {
+				constexpr size_t group_number = global_size / local_size;
+				constexpr size_t element_per_group = vector_length / group_number;
+				sycl::local_accessor<T, 1> local_acc{element_per_group, h};
+
 				h.depends_on(inputs_ready);
 				h.parallel_for(sycl::nd_range<1>{global_size, local_size},
-							   JoiningKernel{input, output});
+							   JoiningKernel{input, output, local_acc});
 			});
 
 			reduction_finished.wait_and_throw();
@@ -88,10 +96,31 @@ int main() {
 
 		q.memset(output, static_cast<T>(0), sizeof(T)).wait_and_throw();
 
+		util::benchmark([&]() {
+			auto reduction_finished = q.submit([&](sycl::handler& h) {
+				constexpr size_t group_number = global_size / local_size;
+				constexpr size_t element_per_group = vector_length / group_number;
+				sycl::local_accessor<T, 1> local_acc{element_per_group, h};
+
+				h.depends_on(inputs_ready);
+				h.parallel_for(sycl::nd_range<1>{global_size, local_size},
+							   ManualKernel{input, output, local_acc});
+			});
+
+			reduction_finished.wait_and_throw();
+		},
+						num_iter, "reduction with manual implementation");
+
+		q.memset(output, static_cast<T>(0), sizeof(T)).wait_and_throw();
+
 		auto reduction_finished = q.submit([&](sycl::handler& h) {
+			constexpr size_t group_number = global_size / local_size;
+			constexpr size_t element_per_group = vector_length / group_number;
+			sycl::local_accessor<T, 1> local_acc{element_per_group, h};
+
 			h.depends_on(inputs_ready);
 			h.parallel_for(sycl::nd_range<1>{global_size, local_size},
-						   JoiningKernel{input, output});
+						   ManualKernel{input, output, local_acc});
 		});
 
 		q.copy(output, &d_dot_product, 1, reduction_finished);
