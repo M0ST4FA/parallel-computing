@@ -1,4 +1,5 @@
 #pragma once
+#include <sycl/group_algorithm.hpp>
 #include <sycl/group_barrier.hpp>
 #include <sycl/sycl.hpp>
 
@@ -31,7 +32,7 @@ void ManualKernel::operator()(sycl::nd_item<1> item) const {
 	sycl::group_barrier(subgroup);
 
 	for (size_t delta = simd_width / 2; delta > 0; delta /= 2) {
-		T other = sycl::shift_group_left(subgroup, sum, delta);
+		T other = sycl::permute_group_by_xor(subgroup, sum, delta);
 
 		sum += other;
 		// No need for barrier as all subgroup members execute the loop in lockstep
