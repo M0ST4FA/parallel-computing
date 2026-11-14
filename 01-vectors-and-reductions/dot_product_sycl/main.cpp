@@ -3,6 +3,7 @@
 #include "benchmark.h"
 #include "common.hpp"
 #include "cpu.hpp"
+#include "joining.hpp"
 #include "reduction.hpp"
 
 constexpr size_t num_iter = 100;
@@ -58,6 +59,8 @@ int main() {
 		},
 						num_iter, "reduction with two kernels");
 
+		q.memset(output, static_cast<T>(0), sizeof(T)).wait_and_throw();
+
 		util::benchmark([&]() {
 			auto reduction_finished = q.submit([&](sycl::handler& h) {
 				h.depends_on(inputs_ready);
@@ -70,11 +73,25 @@ int main() {
 		},
 						num_iter, "reduction with one kernel");
 
+		q.memset(output, static_cast<T>(0), sizeof(T)).wait_and_throw();
+
+		util::benchmark([&]() {
+			auto reduction_finished = q.submit([&](sycl::handler& h) {
+				h.depends_on(inputs_ready);
+				h.parallel_for(sycl::nd_range<1>{global_size, local_size},
+							   JoiningKernel{input, output});
+			});
+
+			reduction_finished.wait_and_throw();
+		},
+						num_iter, "reduction with joining");
+
+		q.memset(output, static_cast<T>(0), sizeof(T)).wait_and_throw();
+
 		auto reduction_finished = q.submit([&](sycl::handler& h) {
 			h.depends_on(inputs_ready);
-			auto reduction = sycl::reduction(output, sycl::plus<T>{});
 			h.parallel_for(sycl::nd_range<1>{global_size, local_size},
-						   reduction, ReductionKernel2{input});
+						   JoiningKernel{input, output});
 		});
 
 		q.copy(output, &d_dot_product, 1, reduction_finished);
