@@ -31,12 +31,14 @@ void ManualKernel::operator()(sycl::nd_item<1> item) const {
 
 	sycl::group_barrier(subgroup);
 
-	for (size_t delta = simd_width / 2; delta > 0; delta /= 2) {
-		T other = sycl::permute_group_by_xor(subgroup, sum, delta);
+	// for (size_t delta = simd_width / 2; delta > 0; delta /= 2) {
+	// 	T other = sycl::permute_group_by_xor(subgroup, sum, delta);
+	//
+	// 	sum += other;
+	// 	// No need for barrier as all subgroup members execute the loop in lockstep
+	// }
 
-		sum += other;
-		// No need for barrier as all subgroup members execute the loop in lockstep
-	}
+	sum = sycl::reduce_over_group(subgroup, sum, sycl::plus<T>{});
 
 	sycl::atomic_ref<T, sycl::memory_order_relaxed,
 					 sycl::memory_scope_device,
