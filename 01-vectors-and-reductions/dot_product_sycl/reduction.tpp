@@ -2,6 +2,7 @@
 
 #include "common.hpp"
 #include "reduction.hpp"
+#include <sycl/detail/builtins/builtins.hpp>
 
 inline void ProductKernel::operator()(sycl::nd_item<1> item) const {
 	const size_t element_per_group = vector_length / item.get_group_range(0);
@@ -45,4 +46,15 @@ void ReductionKernel::operator()(sycl::nd_item<1> item, auto& contrib) const {
 		 i < vector_length;
 		 i += item.get_global_range(0))
 		contrib.combine(tmp[i]);
+}
+
+void ReductionKernel2::operator()(sycl::nd_item<1> item, auto& contrib) const {
+	T partial = 0;
+
+	for (size_t i = item.get_global_id(0);
+		 i < vector_length;
+		 i += item.get_global_range(0))
+		partial += input[i] * input[i + vector_length];
+
+	contrib.combine(partial);
 }

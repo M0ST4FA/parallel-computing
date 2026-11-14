@@ -1,8 +1,11 @@
 #include <format>
 
+#include "benchmark.h"
 #include "common.hpp"
 #include "cpu.hpp"
 #include "reduction.hpp"
+
+constexpr size_t num_iter = 100;
 
 int main() {
 	// 2 vectors in one allocation for efficiency
@@ -33,21 +36,45 @@ int main() {
 
 		T d_dot_product = 0;
 
-		auto prod_finshed = q.submit([&](sycl::handler& h) {
-			h.depends_on(inputs_ready);
-			constexpr size_t group_number = global_size / local_size;
-			constexpr size_t element_per_group = vector_length / group_number;
-			sycl::local_accessor<T, 1> local_acc{element_per_group, h};
+		util::benchmark([&]() {
+			auto prod_finshed = q.submit([&](sycl::handler& h) {
+				h.depends_on(inputs_ready);
+				constexpr size_t group_number = global_size / local_size;
+				constexpr size_t element_per_group = vector_length / group_number;
+				sycl::local_accessor<T, 1> local_acc{element_per_group, h};
 
-			h.parallel_for(sycl::nd_range<1>{global_size, local_size},
-						   ProductKernel2(input, tmp));
-		});
+				h.parallel_for(sycl::nd_range<1>{global_size, local_size},
+							   ProductKernel2(input, tmp));
+			});
+
+			auto reduction_finished = q.submit([&](sycl::handler& h) {
+				h.depends_on(prod_finshed);
+				auto reduction = sycl::reduction(output, sycl::plus<T>{});
+				h.parallel_for(sycl::nd_range<1>{global_size, local_size},
+							   reduction, ReductionKernel{tmp});
+			});
+
+			reduction_finished.wait_and_throw();
+		},
+						num_iter, "reduction with two kernels");
+
+		util::benchmark([&]() {
+			auto reduction_finished = q.submit([&](sycl::handler& h) {
+				h.depends_on(inputs_ready);
+				auto reduction = sycl::reduction(output, sycl::plus<T>{});
+				h.parallel_for(sycl::nd_range<1>{global_size, local_size},
+							   reduction, ReductionKernel2{input});
+			});
+
+			reduction_finished.wait_and_throw();
+		},
+						num_iter, "reduction with one kernel");
 
 		auto reduction_finished = q.submit([&](sycl::handler& h) {
-			h.depends_on(prod_finshed);
+			h.depends_on(inputs_ready);
 			auto reduction = sycl::reduction(output, sycl::plus<T>{});
 			h.parallel_for(sycl::nd_range<1>{global_size, local_size},
-						   reduction, ReductionKernel{tmp});
+						   reduction, ReductionKernel2{input});
 		});
 
 		q.copy(output, &d_dot_product, 1, reduction_finished);

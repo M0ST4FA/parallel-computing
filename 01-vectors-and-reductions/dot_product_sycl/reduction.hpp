@@ -19,5 +19,10 @@ struct ReductionKernel {
 
 	void operator()(sycl::nd_item<1> item, auto& contrib) const;
 };
+struct ReductionKernel2 {
+	T *input;
+
+	void operator()(sycl::nd_item<1> item, auto& contrib) const;
+};
 
 #include "reduction.tpp"
